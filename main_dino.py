@@ -1,11 +1,11 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -135,12 +135,37 @@ def train_dino(args):
     cudnn.benchmark = True
 
     # ============ preparing data ... ============
-    transform = DataAugmentationDINO(
-        args.global_crops_scale,
-        args.local_crops_scale,
-        args.local_crops_number,
-    )
-    dataset = datasets.ImageFolder(args.data_path, transform=transform)
+    if args.data_path.startswith("cifar10-256://"):
+        dino_transform = DataAugmentationDINO(
+            args.global_crops_scale,
+            args.local_crops_scale,
+            args.local_crops_number,
+        )
+        transform = transforms.Compose([
+            transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
+            dino_transform
+        ])
+        data_path = args.data_path[len("cifar10-256://"):]
+        dataset = datasets.CIFAR10(data_path, download=False, transform=transform)
+    elif args.data_path.startswith("cifar10://"):
+        assert args.patch_size < 12, args.patch_size
+        transform = DataAugmentationDINO(
+            args.global_crops_scale,
+            args.local_crops_scale,
+            args.local_crops_number,
+            28,
+            12,
+            with_gaussian_blur=False,
+        )
+        data_path = args.data_path[len("cifar10://"):]
+        dataset = datasets.CIFAR10(data_path, download=False, transform=transform)
+    else:
+        transform = DataAugmentationDINO(
+            args.global_crops_scale,
+            args.local_crops_scale,
+            args.local_crops_number,
+        )
+        dataset = datasets.ImageFolder(args.data_path, transform=transform)
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -407,7 +432,7 @@ class DINOLoss(nn.Module):
 
 
 class DataAugmentationDINO(object):
-    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number):
+    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, gcrop_size=224, lcrop_size=96, with_gaussian_blur=True):
         flip_and_color_jitter = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply(
@@ -423,25 +448,25 @@ class DataAugmentationDINO(object):
 
         # first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(gcrop_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(1.0),
+            utils.GaussianBlur(1.0) if with_gaussian_blur else lambda x: x,
             normalize,
         ])
         # second global crop
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(gcrop_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(0.1),
+            utils.GaussianBlur(0.1) if with_gaussian_blur else lambda x: x,
             utils.Solarization(0.2),
             normalize,
         ])
         # transformation for the local small crops
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(lcrop_size, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(p=0.5),
+            utils.GaussianBlur(p=0.5) if with_gaussian_blur else lambda x: x,
             normalize,
         ])
 
